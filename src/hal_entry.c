@@ -30,6 +30,7 @@
 static void boot_fatal(void);
 static void boot_process_mailbox(void);
 static void boot_process_swap(void);
+static void boot_recover_primary(void);
 
 /** Outcome of this boot, reported back to the application through the mailbox. */
 static uint8_t g_boot_status = BOOT_STATUS_OK;
@@ -43,6 +44,17 @@ void hal_entry (void)
     boot_process_mailbox();
     boot_process_swap();
 
+    /* Last line of defence. Must run BEFORE the flash driver is closed, because
+     * recovering means moving images. */
+    if (!boot_primary_image_ok())
+    {
+        boot_recover_primary();
+    }
+
+    /* Legs completed, for the ack. Taken BEFORE the driver is closed: counting now uses the FCU blank check, which
+     * would otherwise re-open the driver behind the hand-off. */
+    uint8_t legs = (uint8_t) boot_swap_log_count();
+
     /* The flash driver must not be left open across the hand-off. */
     boot_flash_close();
 
@@ -52,12 +64,52 @@ void hal_entry (void)
         boot_fatal();
     }
 
-    boot_mailbox_set_ack(g_boot_status, g_boot_req, (uint8_t) boot_swap_log_count());
+    boot_mailbox_set_ack(g_boot_status, g_boot_req, legs);
 
     boot_jump_to_primary();
 
     /* boot_jump_to_primary() does not return. */
     boot_fatal();
+}
+
+/*******************************************************************************************************//**
+ * @brief  Puts a bootable image back into the primary slot when the one that is there cannot run.
+ *
+ * Reaching this point means the normal paths have already had their say: no swap was pending, or one ran and
+ * still left the primary slot unbootable. Without this the bootloader simply parked in boot_fatal() forever -
+ * recoverable only by erasing the part over SWD. That is an acceptable outcome on a desk and a useless one in
+ * the field, where nobody can attach a debugger.
+ *
+ * The secondary slot is the obvious place to look: after any completed swap it holds the PREVIOUS image, which
+ * by definition booted at some point. If it still passes the same vector-table check used to accept a staged
+ * image, exchanging the slots puts a working image back where the core looks for one.
+ *
+ * This cannot oscillate. A swap is symmetric, so the rejected image lands in the secondary slot; on the next
+ * boot it fails boot_secondary_image_ok() and no second recovery is attempted. Worst case the board ends up in
+ * boot_fatal() exactly as it would have done anyway, one reset later.
+ *
+ * A failure here is deliberately silent: the caller re-checks the primary slot and reports ERR_IMAGE if this
+ * did not help, so there is nothing to add.
+ **********************************************************************************************************/
+static void boot_recover_primary (void)
+{
+    if (!boot_secondary_image_ok())
+    {
+        /* Nothing to fall back to - both slots are unusable. */
+        return;
+    }
+
+    /* Permanent, never a trial: a recovery swap has no application left to confirm it, and a trial would be
+     * reverted on the next boot straight back into the broken image. */
+    if (FSP_SUCCESS != boot_swap_start((uint8_t) BOOT_SWAP_TYPE_PERM))
+    {
+        return;
+    }
+
+    if (BOOT_SWAP_RESULT_DONE == boot_swap_process())
+    {
+        g_boot_status = BOOT_STATUS_SWAPPED;
+    }
 }
 
 /*******************************************************************************************************************//**

@@ -43,6 +43,16 @@ fsp_err_t boot_flash_copy(uint32_t dest, uint32_t src, uint32_t bytes);
 /** Appends one 4 byte entry to the data flash swap log. The block must already be erased at that offset. */
 fsp_err_t boot_flash_log_write(uint32_t address, uint32_t value);
 
+/***********************************************************************************************************************
+ * FCU blank check of a DATA FLASH range. @p p_blank is set true only when the FCU reports the whole range erased.
+ *
+ * WHY THIS EXISTS: on FLASH_HP parts the value READ from an erased data flash cell is UNDEFINED (RA6E2 HW manual,
+ * data flash section). It is not 0xFF, and in practice it is cell specific and can still look like the value that
+ * was programmed there before the erase. A memory-mapped read can therefore never tell "erased" from "programmed" -
+ * only the FCU blank check can. Anything that decides based on "is this entry written?" must use this.
+ **********************************************************************************************************************/
+fsp_err_t boot_flash_df_blank(uint32_t address, uint32_t bytes, bool * p_blank);
+
 /** CRC32 (reflected, poly 0xEDB88320, init 0xFFFFFFFF, final xor) over a directly readable flash range. */
 uint32_t boot_crc32(uint32_t address, uint32_t length);
 

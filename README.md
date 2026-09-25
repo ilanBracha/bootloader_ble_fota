@@ -126,6 +126,23 @@ Data flash is directly readable, so reads need no driver; writes go through `r_f
   each entry is programmed independently and **no erase is needed mid-swap**. The block is erased once at
   the *start* of a swap, so it is always either empty or a description of the swap in flight.
 
+### Erased data flash does not read as 0xFF
+
+On FLASH_HP parts the value **read** from an erased data flash cell is undefined. On a well-cycled part it can
+still read as the value programmed there before the erase. The log is therefore counted with the FCU blank check
+(`boot_flash_df_blank()`): an entry counts only if the FCU reports it programmed **and** it holds the expected
+value. Arming a swap also blank-checks the erased log and refuses the request if it is not provably empty.
+
+Before this fix the log was a plain memory read. On the QA board, entry 0 still read `0xA5A50000` right after the
+erase, so every swap started at step 1. Leg 2 then copied a stale scratch sector into primary[0], the CRC check
+failed, and the primary slot could not boot. v1.0 hung in `boot_fatal()`. v1.1.0 recovered through
+`boot_recover_primary()`, but that recovery left the stale sector in secondary[0], so the log showed
+"rollback to @0x00028000 - empty". Regression: `bash test/host_swap_sim/run.sh`. Hardware proof:
+`script/prove_df_stale.jlink`.
+
+The J-Link scripts (`verify_swap.ps1`, `verify_resume.ps1`, `dump_state.ps1`) still read the log with plain reads.
+On such a part they can report entries that are not really there.
+
 ## Code flash programming
 
 `g_flash0` must have **Code Flash Programming enabled** (configurator → Stacks → g_flash0). With that

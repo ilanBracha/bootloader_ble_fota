@@ -102,6 +102,29 @@ fsp_err_t boot_flash_log_write (uint32_t address, uint32_t value)
     return boot_flash_write(address, &staged, BSP_FEATURE_FLASH_HP_DF_WRITE_SIZE);
 }
 
+fsp_err_t boot_flash_df_blank (uint32_t address, uint32_t bytes, bool * p_blank)
+{
+    *p_blank = false;
+
+    fsp_err_t err = boot_flash_open();
+
+    if (FSP_SUCCESS != err)
+    {
+        return err;
+    }
+
+    flash_result_t result = FLASH_RESULT_NOT_BLANK;
+
+    err = BOOT_FLASH.p_api->blankCheck(BOOT_FLASH.p_ctrl, address, bytes, &result);
+
+    if (FSP_SUCCESS == err)
+    {
+        *p_blank = (FLASH_RESULT_BLANK == result);
+    }
+
+    return err;
+}
+
 /***********************************************************************************************************************
  * Erases the destination and copies flash to flash one chunk at a time.
  *

@@ -71,6 +71,33 @@ fsp_err_t boot_record_request_swap (uint8_t swap_type, uint32_t crc_staged)
         return err;
     }
 
+    /* Prove the erase with the FCU, not with a read: erased data flash reads back UNDEFINED data (see
+     * boot_flash_df_blank()). A swap must never start unless the log is provably empty, otherwise it resumes from a
+     * step that never ran. One retry, then refuse - a refused request leaves both slots untouched. */
+    bool blank = false;
+
+    err = boot_flash_df_blank(BOOT_SWAP_LOG_ADDRESS, BOOT_SWAP_LOG_SIZE, &blank);
+
+    if ((FSP_SUCCESS == err) && !blank)
+    {
+        err = boot_flash_erase(BOOT_SWAP_LOG_ADDRESS, BOOT_SWAP_LOG_SIZE);
+
+        if (FSP_SUCCESS == err)
+        {
+            err = boot_flash_df_blank(BOOT_SWAP_LOG_ADDRESS, BOOT_SWAP_LOG_SIZE, &blank);
+        }
+    }
+
+    if (FSP_SUCCESS != err)
+    {
+        return err;
+    }
+
+    if (!blank)
+    {
+        return FSP_ERR_ERASE_FAILED;
+    }
+
     boot_record_load(&g_staged_record);
 
     g_staged_record.swap_type = swap_type;

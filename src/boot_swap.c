@@ -12,21 +12,50 @@
  * Counts the leading, well formed entries in the progress log.
  *
  * Entries are written in order, so the first empty or unexpected entry marks where the last attempt stopped.
+ *
+ * An entry counts only when the FCU blank check says it is PROGRAMMED *and* it reads back the expected value. The
+ * value alone is not enough: an erased data flash cell reads back UNDEFINED data, and on a well cycled part it can
+ * still read as the entry that was programmed there before the erase. Trusting the read made a freshly armed swap
+ * skip its first leg(s) - see the FIX note in boot_swap_process().
+ *
+ * Returns an error (and count 0) when the blank check itself fails; the caller must NOT treat that as "start from 0",
+ * because on a resumed swap that would re-run legs whose sources have already been overwritten.
  **********************************************************************************************************************/
-uint32_t boot_swap_log_count (void)
+static fsp_err_t boot_swap_log_scan (uint32_t * p_count)
 {
     const volatile uint32_t * p_log = (const volatile uint32_t *) BOOT_SWAP_LOG_ADDRESS;
     uint32_t                  count = 0U;
 
+    *p_count = 0U;
+
     while (count < BOOT_SWAP_STEP_COUNT)
     {
-        if (BOOT_SWAP_LOG_ENTRY(count) != p_log[count])
+        bool      blank = true;
+        fsp_err_t err   = boot_flash_df_blank(BOOT_SWAP_LOG_ADDRESS + (count * 4U), 4U, &blank);
+
+        if (FSP_SUCCESS != err)
+        {
+            return err;
+        }
+
+        if (blank || (BOOT_SWAP_LOG_ENTRY(count) != p_log[count]))
         {
             break;
         }
 
         count++;
     }
+
+    *p_count = count;
+
+    return FSP_SUCCESS;
+}
+
+uint32_t boot_swap_log_count (void)
+{
+    uint32_t count = 0U;
+
+    (void) boot_swap_log_scan(&count);
 
     return count;
 }
@@ -125,8 +154,23 @@ boot_swap_result_t boot_swap_process (void)
     /* Read the reference before the exchange overwrites the slot it describes. */
     uint32_t crc_staged = boot_record_staged_crc();
 
-    /* Resume from wherever the last attempt stopped. On a fresh request the log was erased, so this is 0. */
-    for (uint32_t step = boot_swap_log_count(); step < BOOT_SWAP_STEP_COUNT; step++)
+    /* Resume from wherever the last attempt stopped. On a fresh request the log was erased, so this is 0.
+     *
+     * FIX (QA board "old image missing from secondary" / hang mid-swap): this used to be a plain memory-mapped read
+     * of the log. Right after boot_record_request_swap() erased the block, entry 0 could still READ as 0xA5A50000 on
+     * a well cycled part (erased data flash reads are undefined), so the swap started at step 1: leg 2 then copied a
+     * STALE scratch sector (the tail of an older image) into primary sector 0. The CRC check caught it, but
+     * primary was unbootable - the old bootloader hung in boot_fatal(), v1.1.0 masked it with boot_recover_primary(),
+     * which put that stale sector into secondary[0]. Hence "rollback to @0x00028000 - empty". */
+    uint32_t first_step = 0U;
+
+    if (FSP_SUCCESS != boot_swap_log_scan(&first_step))
+    {
+        /* Cannot tell where the exchange stopped. Guessing is what corrupts slots; stop and report instead. */
+        return BOOT_SWAP_RESULT_ERROR;
+    }
+
+    for (uint32_t step = first_step; step < BOOT_SWAP_STEP_COUNT; step++)
     {
         uint32_t sector = step / BOOT_SWAP_LEGS_PER_SECTOR;
         uint32_t leg    = step % BOOT_SWAP_LEGS_PER_SECTOR;
